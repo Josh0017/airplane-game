@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <!-- 关键：适配手机屏幕，微信里打开不缩放 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>经典打飞机游戏</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            touch-action: none; /* 禁止手机默认触摸行为 */
+        }
+        body {
+            background: #000;
+            overflow: hidden;
+            font-family: "微软雅黑";
+        }
+        #gameCanvas {
+            display: block;
+            margin: 0 auto;
+            background: #111;
+        }
+        /* 游戏信息面板（分数、关卡、生命） */
+        .game-info {
+            position: fixed;
+            top: 10px;
+            left: 0;
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            padding: 0 20px;
+            color: #fff;
+            font-size: 16px;
+            z-index: 10;
+        }
+        /* 开始/结束弹窗 */
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.8);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: #fff;
+            z-index: 20;
+        }
+        .modal h1 {
+            font-size: 30px;
+            margin-bottom: 20px;
+        }
+        .modal button {
+            padding: 10px 30px;
+            font-size: 18px;
+            background: #ff6600;
+            border: none;
+            border-radius: 8px;
+            color: #fff;
+            margin-top: 20px;
+            cursor: pointer;
+        }
+        .modal button:active {
+            background: #e55a00;
+        }
+        /* 适配不同手机屏幕 */
+        @media screen and (max-width: 400px) {
+            .game-info {
+                font-size: 14px;
+            }
+            .modal h1 {
+                font-size: 24px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- 游戏信息：分数、关卡、生命 -->
+    <div class="game-info">
+        <div>分数: <span id="score">0</span></div>
+        <div>关卡: <span id="level">1</span></div>
+        <div>生命: <span id="life">3</span></div>
+    </div>
+    
+    <!-- 游戏画布 -->
+    <canvas id="gameCanvas"></canvas>
+    
+    <!-- 开始弹窗 -->
+    <div id="startModal" class="modal">
+        <h1>经典打飞机</h1>
+        <p>手指滑动屏幕控制飞机移动</p>
+        <p>自动发射子弹，击败所有敌机！</p>
+        <button onclick="startGame()">开始游戏</button>
+    </div>
+    
+    <!-- 结束弹窗 -->
+    <div id="gameOverModal" class="modal" style="display: none;">
+        <h1>游戏结束</h1>
+        <p>最终分数: <span id="finalScore">0</span></p>
+        <p>当前关卡: <span id="finalLevel">1</span></p>
+        <button onclick="restartGame()">重新开始</button>
+    </div>
+
+    <script>
+        // ========== 游戏核心配置 ==========
+        const config = {
+            screenWidth: window.innerWidth,  // 屏幕宽度（自动适配手机）
+            screenHeight: window.innerHeight, // 屏幕高度
+            playerSpeed: 5,                  // 飞机移动速度
+            bulletSpeed: 8,                  // 子弹速度
+            enemySpeed: 3,                   // 敌机基础速度
+            enemySpawnRate: 1500,            // 敌机生成间隔（毫秒）
+            bulletSpawnRate: 300,            // 子弹发射间隔
+            levelUpScore: 1000,              // 每得1000分升一级
+        };
+
+        // ========== 游戏状态 ==========
+        let canvas, ctx;
+        let player = { x: 0, y: 0, width: 50, height: 50, alive: true };
+        let bullets = [];
+        let enemies = [];
+        let score = 0;
+        let level = 1;
+        let life = 3;
+        let gameLoop;
+        let isGameRunning = false;
+        let touchStartX = 0;
+        let touchStartY = 0;
+
+        // ========== 初始化游戏 ==========
+        function initGame() {
+            // 获取画布并适配手机屏幕
+            canvas = document.getElementById('gameCanvas');
+            ctx = canvas.getContext('2d');
+            canvas.width = config.screenWidth;
+            canvas.height = config.screenHeight;
+
+            // 初始化玩家飞机位置（屏幕底部中间）
+            player.x = (canvas.width - player.width) / 2;
+            player.y = canvas.height - player.height - 20;
+
+            // 绑定触摸事件（手机滑动控制）
+            canvas.addEventListener('touchstart', handleTouchStart);
+            canvas.addEventListener('touchmove', handleTouchMove);
+            // 阻止屏幕滚动
+            document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+        }
+
+        // ========== 触摸控制逻辑 ==========
+        function handleTouchStart(e) {
+            if (!isGameRunning) return;
+            // 获取触摸起始位置
+            touchStartX = e.touches[0].clientX;
+            touchStartY = e.touches[0].clientY;
+        }
+
+        function handleTouchMove(e) {
+            if (!isGameRunning || !player.alive) return;
+            // 计算触摸移动的距离
+            const touchX = e.touches[0].clientX;
+            const touchY = e.touches[0].clientY;
+            const dx = touchX - touchStartX;
+            const dy = touchY - touchStartY;
+
+            // 更新飞机位置（限制在屏幕内）
+            player.x += dx;
+            player.y += dy;
+            touchStartX = touchX;
+            touchStartY = touchY;
+
+            // 边界检测：飞机不出屏幕
+            if (player.x < 0) player.x = 0;
+            if (player.x > canvas.width - player.width) player.x = canvas.width - player.width;
+            if (player.y < 0) player.y = 0;
+            if (player.y > canvas.height - player.height) player.y = canvas.height - player.height;
+        }
+
+        // ========== 绘制元素 ==========
+        // 绘制玩家飞机
+        function drawPlayer() {
+            ctx.fillStyle = '#00ff00'; // 绿色飞机
+            ctx.beginPath();
+            ctx.rect(player.x, player.y, player.width, player.height);
+            ctx.fill();
+            // 画飞机头部（三角形）
+            ctx.fillStyle = '#00cc00';
+            ctx.beginPath();
+            ctx.moveTo(player.x + player.width/2, player.y - 10);
+            ctx.lineTo(player.x, player.y);
+            ctx.lineTo(player.x + player.width, player.y);
+            ctx.fill();
+        }
+
+        // 绘制子弹
+        function drawBullets() {
+            ctx.fillStyle = '#ffff00'; // 黄色子弹
+            bullets.forEach(bullet => {
+                ctx.beginPath();
+                ctx.rect(bullet.x, bullet.y, bullet.width, bullet.height);
+                ctx.fill();
+            });
+        }
+
+        // 绘制敌机（大小敌机区分）
+        function drawEnemies() {
+            enemies.forEach(enemy => {
+                if (enemy.type === 'small') {
+                    ctx.fillStyle = '#ff0000'; // 小型敌机-红色
+                } else {
+                    ctx.fillStyle = '#ff6600'; // 大型敌机-橙色（BOSS）
+                }
+                ctx.beginPath();
+                ctx.rect(enemy.x, enemy.y, enemy.width, enemy.height);
+                ctx.fill();
+            });
+        }
+
+        // ========== 更新游戏逻辑 ==========
+        function updateGame() {
+            // 更新子弹位置
+            bullets = bullets.filter(bullet => {
+                bullet.y -= config.bulletSpeed;
+                return bullet.y > 0; // 移除出屏幕的子弹
+            });
+
+            // 更新敌机位置
+            enemies = enemies.filter(enemy => {
+                enemy.y += config.enemySpeed + (level - 1) * 0.5; // 关卡越高，敌机越快
+                return enemy.y < canvas.height; // 移除出屏幕的敌机
+            });
+
+            // 检测碰撞（子弹打敌机）
+            bullets.forEach((bullet, bIndex) => {
+                enemies.forEach((enemy, eIndex) => {
+                    if (
+                        bullet.x < enemy.x + enemy.width &&
+                        bullet.x + bullet.width > enemy.x &&
+                        bullet.y < enemy.y + enemy.height &&
+                        bullet.y + bullet.height > enemy.y
+                    ) {
+                        // 击中敌机，加分
+                        if (enemy.type === 'small') {
+                            score += 100; // 小敌机100分
+                        } else {
+                            score += 500; // 大敌机500分
+                        }
+                        // 更新分数显示
+                        document.getElementById('score').textContent = score;
+                        // 移除击中的子弹和敌机
+                        bullets.splice(bIndex, 1);
+                        enemies.splice(eIndex, 1);
+
+                        // 检测升级
+                        if (score >= level * config.levelUpScore) {
+                            levelUp();
+                        }
+                    }
+                });
+            });
+
+            // 检测碰撞（敌机撞玩家）
+            enemies.forEach((enemy, eIndex) => {
+                if (
+                    player.x < enemy.x + enemy.width &&
+                    player.x + player.width > enemy.x &&
+                    player.y < enemy.y + enemy.height &&
+                    player.y + player.height > enemy.y
+                ) {
+                    // 扣生命
+                    life--;
+                    document.getElementById('life').textContent = life;
+                    // 移除撞机的敌机
+                    enemies.splice(eIndex, 1);
+
+                    // 生命为0，游戏结束
+                    if (life <= 0) {
+                        gameOver();
+                    }
+                }
+            });
+        }
+
+        // ========== 游戏控制函数 ==========
+        // 生成子弹（自动发射）
+        function spawnBullets() {
+            if (!isGameRunning || !player.alive) return;
+            const bulletWidth = 5;
+            const bulletHeight = 15;
+            bullets.push({
+                x: player.x + player.width/2 - bulletWidth/2,
+                y: player.y,
+                width: bulletWidth,
+                height: bulletHeight
+            });
+        }
+
+        // 生成敌机（随机大小）
+        function spawnEnemies() {
+            if (!isGameRunning) return;
+            const randomType = Math.random() > 0.8 ? 'big' : 'small'; // 20%概率出大敌机
+            const enemyWidth = randomType === 'small' ? 30 : 60;
+            const enemyHeight = randomType === 'small' ? 30 : 60;
+            // 随机位置生成敌机
+            enemies.push({
+                x: Math.random() * (canvas.width - enemyWidth),
+                y: -enemyHeight,
+                width: enemyWidth,
+                height: enemyHeight,
+                type: randomType
+            });
+        }
+
+        // 升级逻辑
+        function levelUp() {
+            level++;
+            document.getElementById('level').textContent = level;
+            // 升级后敌机生成更快
+            config.enemySpawnRate = Math.max(800, config.enemySpawnRate - 200);
+            // 提示升级
+            alert(`恭喜！升级到${level}级，敌机速度变快了！`);
+        }
+
+        // 开始游戏
+        function startGame() {
+            document.getElementById('startModal').style.display = 'none';
+            isGameRunning = true;
+            player.alive = true;
+            
+            // 启动游戏循环
+            gameLoop = setInterval(() => {
+                // 清空画布
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                // 更新逻辑
+                updateGame();
+                // 绘制元素
+                drawPlayer();
+                drawBullets();
+                drawEnemies();
+            }, 30);
+
+            // 启动自动发射子弹
+            setInterval(spawnBullets, config.bulletSpawnRate);
+            // 启动生成敌机
+            setInterval(spawnEnemies, config.enemySpawnRate);
+        }
+
+        // 游戏结束
+        function gameOver() {
+            isGameRunning = false;
+            player.alive = false;
+            clearInterval(gameLoop);
+            // 显示结束弹窗
+            document.getElementById('finalScore').textContent = score;
+            document.getElementById('finalLevel').textContent = level;
+            document.getElementById('gameOverModal').style.display = 'flex';
+        }
+
+        // 重新开始游戏
+        function restartGame() {
+            // 重置游戏状态
+            score = 0;
+            level = 1;
+            life = 3;
+            bullets = [];
+            enemies = [];
+            config.enemySpawnRate = 1500; // 重置敌机生成速度
+            // 更新显示
+            document.getElementById('score').textContent = score;
+            document.getElementById('level').textContent = level;
+            document.getElementById('life').textContent = life;
+            // 隐藏结束弹窗
+            document.getElementById('gameOverModal').style.display = 'none';
+            // 重新初始化飞机位置
+            player.x = (canvas.width - player.width) / 2;
+            player.y = canvas.height - player.height - 20;
+            // 开始游戏
+            startGame();
+        }
+
+        // 页面加载完成后初始化游戏
+        window.onload = function() {
+            initGame();
+        };
+
+        // 适配手机屏幕旋转
+        window.onresize = function() {
+            if (isGameRunning) {
+                config.screenWidth = window.innerWidth;
+                config.screenHeight = window.innerHeight;
+                canvas.width = config.screenWidth;
+                canvas.height = config.screenHeight;
+                // 重置飞机位置
+                player.x = (canvas.width - player.width) / 2;
+                player.y = canvas.height - player.height - 20;
+            }
+        };
+    </script>
+</body>
+</html>
